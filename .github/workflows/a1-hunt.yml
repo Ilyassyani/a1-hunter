@@ -7,7 +7,6 @@ on:
   # ponytail: 30 min = <=1440 min/mois, sous les 2000 min gratuites d'un depot prive (chaque essai < 1 min)
   schedule: [{cron: '*/30 * * * *'}]
   workflow_dispatch:
-concurrency: {group: hunt, cancel-in-progress: false}
 permissions: {actions: write}
 
 jobs:
