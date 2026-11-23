@@ -67,5 +67,8 @@ jobs:
           esac
 
           out=$(oci resource-manager job create-apply-job --stack-id "$STACK" --execution-plan-strategy AUTO_APPROVED \
-            --query data.id --raw-output 2>&1) || fail "create-apply-job : $out"
+            --query data.id --raw-output 2>&1) || {
+            # 429 = Oracle limite les lancements par utilisateur : pas une panne, on retente au prochain passage
+            case "$out" in *TooManyRequests*) echo "Oracle freine (429)"; exit 0 ;; esac
+            fail "create-apply-job : $out"; }
           echo "essai lance"
