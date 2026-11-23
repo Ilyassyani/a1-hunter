@@ -49,7 +49,7 @@ jobs:
           [ "$GITHUB_EVENT_NAME" = workflow_dispatch ] && notify "A1 : chasse lancee" "Essai toutes les ~5 min."
 
           # dernier job APPLY de la stack : "<id> <etat>"
-          last=$(oci resource-manager job list --stack-id "$STACK" --sort-by timeCreated --sort-order DESC --all \
+          last=$(oci resource-manager job list --stack-id "$STACK" --sort-by timeCreated --sort-order DESC --limit 20 \
             --query 'data[?operation==`APPLY`] | [0].[id,"lifecycle-state"] | join(`" "`, @)' --raw-output 2>&1) \
             || fail "job list : $last"
           id=${last% *}; state=${last#* }
