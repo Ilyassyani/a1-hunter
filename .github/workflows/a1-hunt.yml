@@ -1,11 +1,11 @@
-# Relance l'Apply de la stack Oracle "a1-madrid" toutes les ~30 min jusqu'a ce que l'A1 soit creee,
+# Relance l'Apply de la stack Oracle "a1-madrid" toutes les ~5 min jusqu'a ce que l'A1 soit creee,
 # puis previent sur ntfy et se desactive. Toute erreur autre que "manque de capacite" : notif + pause.
 # Secrets : OCI_CONFIG (config sans key_file), OCI_KEY (.pem du bot), STACK_OCID, NTFY_URL.
 # Relancer apres une pause : onglet Actions -> a1-hunt -> Enable workflow, puis Run workflow.
 name: a1-hunt
 on:
-  # ponytail: 30 min = <=1440 min/mois, sous les 2000 min gratuites d'un depot prive (chaque essai < 1 min)
-  schedule: [{cron: '*/30 * * * *'}]
+  # depot public = minutes illimitees ; repasse en prive => remettre */30 (quota 2000 min/mois)
+  schedule: [{cron: '*/5 * * * *'}]
   workflow_dispatch:
 permissions: {actions: write}
 
@@ -46,7 +46,7 @@ jobs:
           stop()   { gh workflow disable a1-hunt -R "$GITHUB_REPOSITORY"; }
           fail()   { echo "ERREUR : $1"; notify "A1 : probleme, chasse en pause" "$1"; stop; exit 1; }
 
-          [ "$GITHUB_EVENT_NAME" = workflow_dispatch ] && notify "A1 : chasse lancee" "Essai toutes les ~30 min."
+          [ "$GITHUB_EVENT_NAME" = workflow_dispatch ] && notify "A1 : chasse lancee" "Essai toutes les ~5 min."
 
           # dernier job APPLY de la stack : "<id> <etat>"
           last=$(oci resource-manager job list --stack-id "$STACK" --sort-by timeCreated --sort-order DESC --all \
