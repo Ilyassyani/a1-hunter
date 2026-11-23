@@ -1,0 +1,72 @@
+# Relance l'Apply de la stack Oracle "a1-madrid" toutes les ~30 min jusqu'a ce que l'A1 soit creee,
+# puis previent sur ntfy et se desactive. Toute erreur autre que "manque de capacite" : notif + pause.
+# Secrets : OCI_CONFIG (config sans key_file), OCI_KEY (.pem du bot), STACK_OCID, NTFY_URL.
+# Relancer apres une pause : onglet Actions -> a1-hunt -> Enable workflow, puis Run workflow.
+name: a1-hunt
+on:
+  # ponytail: 30 min = <=1440 min/mois, sous les 2000 min gratuites d'un depot prive (chaque essai < 1 min)
+  schedule: [{cron: '*/30 * * * *'}]
+  workflow_dispatch:
+concurrency: {group: hunt, cancel-in-progress: false}
+permissions: {actions: write}
+
+jobs:
+  hunt:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    env:
+      OCI_CLI_SUPPRESS_FILE_PERMISSIONS_WARNING: 'True'
+    steps:
+      # version de l'image du runner : si elle change (nouveau Python), le cache de l'outil est refait
+      - id: img
+        run: echo "v=$ImageVersion" >> "$GITHUB_OUTPUT"
+      - id: cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.local/pipx
+            ~/.local/bin
+          key: oci-cli-${{ runner.os }}-${{ steps.img.outputs.v }}
+      - if: steps.cache.outputs.cache-hit != 'true'
+        run: pipx install oci-cli
+      - name: config
+        env: {CFG: '${{ secrets.OCI_CONFIG }}', KEY: '${{ secrets.OCI_KEY }}'}
+        run: |
+          mkdir -p ~/.oci
+          printf '%s\n' "$CFG" > ~/.oci/config
+          printf '%s\n' "$KEY" > ~/.oci/key.pem
+          echo "key_file=$HOME/.oci/key.pem" >> ~/.oci/config
+          chmod 600 ~/.oci/config ~/.oci/key.pem
+      - name: essai
+        env:
+          STACK: ${{ secrets.STACK_OCID }}
+          NTFY: ${{ secrets.NTFY_URL }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          notify() { curl -s -H "Title: $1" -d "$2" "$NTFY" >/dev/null; }
+          stop()   { gh workflow disable a1-hunt -R "$GITHUB_REPOSITORY"; }
+          fail()   { echo "ERREUR : $1"; notify "A1 : probleme, chasse en pause" "$1"; stop; exit 1; }
+
+          [ "$GITHUB_EVENT_NAME" = workflow_dispatch ] && notify "A1 : chasse lancee" "Essai toutes les ~30 min."
+
+          # dernier job APPLY de la stack : "<id> <etat>"
+          last=$(oci resource-manager job list --stack-id "$STACK" --sort-by timeCreated --sort-order DESC --all \
+            --query 'data[?operation==`APPLY`] | [0].[id,"lifecycle-state"] | join(` `, @)' --raw-output 2>&1) \
+            || fail "job list : $last"
+          id=${last% *}; state=${last#* }
+          echo "dernier essai : $state"
+
+          case "$state" in
+            ACCEPTED|IN_PROGRESS|CANCELING) exit 0 ;;
+            SUCCEEDED)
+              notify "A1 CREEE" "La machine A1 existe. Ajouter l'IP publique (Attached VNICs), puis supprimer la cle API du bot."
+              stop; exit 0 ;;
+            FAILED)
+              oci resource-manager job get-job-logs-content --job-id "$id" --raw-output 2>/dev/null \
+                | grep -qi "out of host capacity" \
+                || fail "Le dernier essai a echoue pour une autre raison que la capacite : voir ses logs dans la console (stack a1-madrid -> Jobs)." ;;
+          esac
+
+          out=$(oci resource-manager job create-apply-job --stack-id "$STACK" --execution-plan-strategy AUTO_APPROVED \
+            --query data.id --raw-output 2>&1) || fail "create-apply-job : $out"
+          echo "essai lance"
