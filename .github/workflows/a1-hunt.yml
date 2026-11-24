@@ -56,7 +56,8 @@ jobs:
             "length(data[?shape=='VM.Standard.A1.Flex' && \"lifecycle-state\"!='TERMINATED' && \"lifecycle-state\"!='TERMINATING'])" 2>&1) \
             || { case "$n" in *TooManyRequests*|*'"status": 5'*) echo "lecture impossible, passage saute"; exit 0 ;; esac
                  fail "instance list : $n"; }
-          [ "$n" = 0 ] || { echo "A1 deja la"; fini; }
+          # aucune instance du tout -> oci n'affiche rien (pas meme 0)
+          [ "${n:-0}" = 0 ] || { echo "A1 deja la ($n)"; fini; }
 
           # memes reglages que chasse-pc (shape.json, options.json)
           out=$(oci compute instance launch --compartment-id "$comp" \
