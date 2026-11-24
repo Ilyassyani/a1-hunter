@@ -6,6 +6,7 @@
 name: a1-hunt
 on:
   # depot public = minutes illimitees ; repasse en prive => remettre */30 (quota 2000 min/mois)
+  # le cron n'a JAMAIS declenche (23-24/11, 0 run "schedule") : moteur = l'etape "relance" (chaque run lance le suivant)
   schedule: [{cron: '*/5 * * * *'}]
   workflow_dispatch:
 permissions: {actions: write}
@@ -13,7 +14,7 @@ permissions: {actions: write}
 jobs:
   hunt:
     runs-on: ubuntu-latest
-    timeout-minutes: 3
+    timeout-minutes: 10
     env:
       OCI_CLI_SUPPRESS_FILE_PERMISSIONS_WARNING: 'True'
     steps:
@@ -49,7 +50,8 @@ jobs:
           fail()   { echo "ERREUR : $1"; notify "A1 : probleme, chasse GitHub en pause" "$1"; stop; exit 1; }
           fini()   { notify "A1 CREEE" "La machine A1 existe. Previens Claude."; stop; exit 0; }
 
-          [ "$GITHUB_EVENT_NAME" = workflow_dispatch ] && notify "A1 : chasse GitHub lancee" "Essai toutes les ~5 min."
+          # notif seulement au lancement a la main, pas a chaque maillon de la chaine (lance par github-actions[bot])
+          [ "$GITHUB_EVENT_NAME" = workflow_dispatch ] && [ "$GITHUB_TRIGGERING_ACTOR" != 'github-actions[bot]' ] && notify "A1 : chasse GitHub lancee" "Essai toutes les ~5 min."
 
           comp=$(sed -n 's/^tenancy=//p' ~/.oci/config)
           n=$(oci compute instance list --compartment-id "$comp" --all --raw-output --query \
@@ -74,3 +76,18 @@ jobs:
             *'"status": 5'*|*Connection*|*'timed out'*|*'Max retries'*) echo "erreur reseau ou Oracle passagere" ;;
             *) fail "launch : $out" ;;
           esac
+      # Chaine : chaque run lance le suivant (GITHUB_TOKEN a le droit de declencher workflow_dispatch).
+      # Seuls les runs "dispatch" relancent -> si le cron se reveille, il ne cree pas de chaines en plus.
+      # Arret : workflow desactive (succes/erreur, la relance echoue alors) ou run annule a la main.
+      - name: relance
+        if: ${{ !cancelled() && github.event_name == 'workflow_dispatch' }}
+        env:
+          NTFY: ${{ secrets.NTFY_URL }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          sleep $((150 + RANDOM % 90))
+          gh workflow run a1-hunt -R "$GITHUB_REPOSITORY" && exit 0
+          state=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/a1-hunt.yml" --jq .state || echo inconnu)
+          [ "$state" = active ] || { echo "workflow $state : chaine arretee"; exit 0; }
+          curl -s -H "Title: A1 : chasse GitHub arretee" -d "Relance impossible : Actions -> a1-hunt -> Run workflow." "$NTFY" >/dev/null
+          exit 1
