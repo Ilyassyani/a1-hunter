@@ -1,6 +1,7 @@
-# Relance l'Apply de la stack Oracle "a1-madrid" toutes les ~5 min jusqu'a ce que l'A1 soit creee,
-# puis previent sur ntfy et se desactive. Toute erreur autre que "manque de capacite" : notif + pause.
-# Secrets : OCI_CONFIG (config sans key_file), OCI_KEY (.pem du bot), STACK_OCID, NTFY_URL.
+# Demande directement l'A1 a Oracle (API compute, sans la stack) toutes les ~5 min, comme chasse-pc\chasse.ps1,
+# puis previent sur ntfy et se desactive. Toute erreur autre que capacite/429/reseau : notif + pause.
+# Garde-fou : une A1 existe deja (creee par le PC ou un passage precedent) -> stop, pas de 2e instance.
+# Secrets : OCI_CONFIG (config sans key_file), OCI_KEY (.pem du bot), SUBNET_ID, SSH_PUB, NTFY_URL.
 # Relancer apres une pause : onglet Actions -> a1-hunt -> Enable workflow, puis Run workflow.
 name: a1-hunt
 on:
@@ -29,46 +30,46 @@ jobs:
       - if: steps.cache.outputs.cache-hit != 'true'
         run: pipx install oci-cli
       - name: config
-        env: {CFG: '${{ secrets.OCI_CONFIG }}', KEY: '${{ secrets.OCI_KEY }}'}
+        env: {CFG: '${{ secrets.OCI_CONFIG }}', KEY: '${{ secrets.OCI_KEY }}', SSH: '${{ secrets.SSH_PUB }}'}
         run: |
           mkdir -p ~/.oci
           printf '%s\n' "$CFG" > ~/.oci/config
           printf '%s\n' "$KEY" > ~/.oci/key.pem
+          printf '%s\n' "$SSH" > ~/.oci/a1-ssh.pub
           echo "key_file=$HOME/.oci/key.pem" >> ~/.oci/config
           chmod 600 ~/.oci/config ~/.oci/key.pem
       - name: essai
         env:
-          STACK: ${{ secrets.STACK_OCID }}
+          SUBNET: ${{ secrets.SUBNET_ID }}
           NTFY: ${{ secrets.NTFY_URL }}
           GH_TOKEN: ${{ github.token }}
         run: |
           notify() { curl -s -H "Title: $1" -d "$2" "$NTFY" >/dev/null; }
           stop()   { gh workflow disable a1-hunt -R "$GITHUB_REPOSITORY"; }
-          fail()   { echo "ERREUR : $1"; notify "A1 : probleme, chasse en pause" "$1"; stop; exit 1; }
+          fail()   { echo "ERREUR : $1"; notify "A1 : probleme, chasse GitHub en pause" "$1"; stop; exit 1; }
+          fini()   { notify "A1 CREEE" "La machine A1 existe. Previens Claude."; stop; exit 0; }
 
-          [ "$GITHUB_EVENT_NAME" = workflow_dispatch ] && notify "A1 : chasse lancee" "Essai toutes les ~5 min."
+          [ "$GITHUB_EVENT_NAME" = workflow_dispatch ] && notify "A1 : chasse GitHub lancee" "Essai toutes les ~5 min."
 
-          # dernier job APPLY de la stack : "<id> <etat>"
-          last=$(oci resource-manager job list --stack-id "$STACK" --sort-by timeCreated --sort-order DESC --limit 20 \
-            --query 'data[?operation==`APPLY`] | [0].[id,"lifecycle-state"] | join(`" "`, @)' --raw-output 2>&1) \
-            || fail "job list : $last"
-          id=${last% *}; state=${last#* }
-          echo "dernier essai : $state"
+          comp=$(sed -n 's/^tenancy=//p' ~/.oci/config)
+          n=$(oci compute instance list --compartment-id "$comp" --all --raw-output --query \
+            "length(data[?shape=='VM.Standard.A1.Flex' && \"lifecycle-state\"!='TERMINATED' && \"lifecycle-state\"!='TERMINATING'])" 2>&1) \
+            || { case "$n" in *TooManyRequests*|*'"status": 5'*) echo "lecture impossible, passage saute"; exit 0 ;; esac
+                 fail "instance list : $n"; }
+          [ "$n" = 0 ] || { echo "A1 deja la"; fini; }
 
-          case "$state" in
-            ACCEPTED|IN_PROGRESS|CANCELING) exit 0 ;;
-            SUCCEEDED)
-              notify "A1 CREEE" "La machine A1 existe. Ajouter l'IP publique (Attached VNICs), puis supprimer la cle API du bot."
-              stop; exit 0 ;;
-            FAILED)
-              oci resource-manager job get-job-logs-content --job-id "$id" --raw-output 2>/dev/null \
-                | grep -qi "out of host capacity" \
-                || fail "Le dernier essai a echoue pour une autre raison que la capacite : voir ses logs dans la console (stack a1-madrid -> Jobs)." ;;
+          # memes reglages que chasse-pc (shape.json, options.json)
+          out=$(oci compute instance launch --compartment-id "$comp" \
+            --availability-domain 'rmSV:EU-MADRID-1-AD-1' \
+            --shape VM.Standard.A1.Flex --shape-config '{"ocpus": 1, "memoryInGBs": 6}' \
+            --image-id ocid1.image.oc1.eu-madrid-1.aaaaaaaahv6cr6fc6d7vjymz5igvzb57myjdtl4m5e2z22fhnzuoyzgi7xoq \
+            --subnet-id "$SUBNET" --assign-public-ip true --boot-volume-size-in-gbs 200 \
+            --ssh-authorized-keys-file ~/.oci/a1-ssh.pub --is-pv-encryption-in-transit-enabled true \
+            --instance-options '{"areLegacyImdsEndpointsDisabled": true}' --display-name a1 2>&1) && fini
+          case "$out" in
+            *'ut of host capacity'*) echo "pas de place" ;;
+            # 429 = limite par utilisateur (partagee avec la chasse PC, meme bot) : on retente au passage suivant
+            *TooManyRequests*) echo "Oracle freine (429)" ;;
+            *'"status": 5'*|*Connection*|*'timed out'*|*'Max retries'*) echo "erreur reseau ou Oracle passagere" ;;
+            *) fail "launch : $out" ;;
           esac
-
-          out=$(oci resource-manager job create-apply-job --stack-id "$STACK" --execution-plan-strategy AUTO_APPROVED \
-            --query data.id --raw-output 2>&1) || {
-            # 429 = Oracle limite les lancements par utilisateur : pas une panne, on retente au prochain passage
-            case "$out" in *TooManyRequests*) echo "Oracle freine (429)"; exit 0 ;; esac
-            fail "create-apply-job : $out"; }
-          echo "essai lance"
