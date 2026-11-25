@@ -17,6 +17,7 @@ jobs:
     timeout-minutes: 10
     env:
       OCI_CLI_SUPPRESS_FILE_PERMISSIONS_WARNING: 'True'
+      SUPPRESS_LABEL_WARNING: 'True'
     steps:
       # version de l'image du runner : si elle change (nouveau Python), le cache de l'outil est refait
       - id: img
@@ -55,10 +56,12 @@ jobs:
 
           comp=$(sed -n 's/^tenancy=//p' ~/.oci/config)
           n=$(oci compute instance list --compartment-id "$comp" --all --raw-output --query \
-            "length(data[?shape=='VM.Standard.A1.Flex' && \"lifecycle-state\"!='TERMINATED' && \"lifecycle-state\"!='TERMINATING'])" 2>&1) \
-            || { case "$n" in *TooManyRequests*|*'"status": 5'*) echo "lecture impossible, passage saute"; exit 0 ;; esac
+            "length(data[?shape=='VM.Standard.A1.Flex' && \"lifecycle-state\"!='TERMINATED' && \"lifecycle-state\"!='TERMINATING'])" 2>/tmp/err) \
+            || { n="$n$(cat /tmp/err)"; case "$n" in *TooManyRequests*|*'"status": 5'*) echo "lecture impossible, passage saute"; exit 0 ;; esac
                  fail "instance list : $n"; }
-          # aucune instance du tout -> oci n'affiche rien (pas meme 0)
+          # stderr a part : un avertissement d'oci melange a la reponse a fait croire a une A1 (fausse notif, 25/11).
+          # Seul un nombre compte ; aucune instance du tout -> oci n'affiche rien (pas meme 0).
+          [[ "$n" =~ ^[0-9]*$ ]] || fail "instance list, reponse inattendue : $n"
           [ "${n:-0}" = 0 ] || { echo "A1 deja la ($n)"; fini; }
 
           # memes reglages que chasse-pc (shape.json, options.json)
