@@ -14,7 +14,7 @@ permissions: {actions: write}
 jobs:
   hunt:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     env:
       OCI_CLI_SUPPRESS_FILE_PERMISSIONS_WARNING: 'True'
       SUPPRESS_LABEL_WARNING: 'True'
