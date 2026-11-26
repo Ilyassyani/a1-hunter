@@ -89,7 +89,16 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           sleep $((150 + RANDOM % 90))
-          gh workflow run a1-hunt -R "$GITHUB_REPOSITORY" && exit 0
+          # 3 essais : un HTTP 500 isole de GitHub a casse la chaine le 25/11.
+          # Avant de reessayer, on verifie qu'un 500 n'a pas quand meme cree le run (sinon 2 chaines) ;
+          # filtre sur la date car 4 runs fantomes "queued" du 23/11 trainent pour toujours.
+          t0=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          for i in 1 2 3; do
+            gh workflow run a1-hunt -R "$GITHUB_REPOSITORY" && exit 0
+            sleep 60
+            n=$(gh run list -R "$GITHUB_REPOSITORY" -w a1-hunt -e workflow_dispatch -L 5 --json createdAt -q "[.[] | select(.createdAt >= \"$t0\")] | length" || echo 0)
+            [ "$n" -gt 0 ] && { echo "le run suivant existe malgre l'erreur"; exit 0; }
+          done
           state=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/a1-hunt.yml" --jq .state || echo inconnu)
           [ "$state" = active ] || { echo "workflow $state : chaine arretee"; exit 0; }
           curl -s -H "Title: A1 : chasse GitHub arretee" -d "Relance impossible : Actions -> a1-hunt -> Run workflow." "$NTFY" >/dev/null
